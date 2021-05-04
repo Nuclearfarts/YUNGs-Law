@@ -2,6 +2,10 @@ package com.yungnickyoung.minecraft.yungslaw.world;
 
 import com.yungnickyoung.minecraft.yungslaw.YungsLaw;
 import com.yungnickyoung.minecraft.yungslaw.config.util.ConfigHolder;
+
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+
 import com.yungnickyoung.minecraft.yungslaw.config.Configuration;
 import com.yungnickyoung.minecraft.yungslaw.config.io.ConfigLoader;
 import net.minecraft.block.Block;
@@ -20,20 +24,23 @@ import java.util.Random;
 import java.util.Set;
 
 public class BlockGenerator implements IWorldGenerator {
+    private final Int2ObjectMap<CachedConfig> configCache = new Int2ObjectOpenHashMap<>();
+    
     public void generate(Random random, int chunkX, int chunkZ, World world, IChunkGenerator chunkGenerator, IChunkProvider chunkProvider) {
         if (!(world instanceof WorldServer)) return;
         if (!isDimensionWhitelisted(world)) return;
 
         // Extract vars from config for this dimension
-        final ConfigHolder config = YungsLaw.configMap.computeIfAbsent(world.provider.getDimension(), ConfigLoader::loadConfigFromFileForDimension);
-        final boolean           enableOreDeletion    = config.enableOreDeletion.get();
-        final int               radius               = config.genDistance.get();
-        final int               maxAltitude          = config.maxAltitude.get();
-        final boolean           enableLiquidSafety   = config.enableLiquidSafety.get();
-        final IBlockState       hardBlock            = getHardBlockFromString(config.hardBlock.get());
-        final Set<IBlockState>  whitelistedOreBlocks = getBlockSetFromNames(config.oreWhitelist.get());
-        final Set<IBlockState>  safeBlocks           = getBlockSetFromNames(config.safeBlocks.get());
-        final Set<IBlockState>  untouchableBlocks    = getBlockSetFromNames(config.untouchableBlocks.get());
+        final CachedConfig config = configCache.computeIfAbsent(world.provider.getDimension(), i -> new CachedConfig(YungsLaw.configMap.computeIfAbsent(world.provider.getDimension(), ConfigLoader::loadConfigFromFileForDimension)));
+        final boolean           enableOreDeletion    = config.enableOreDeletion;
+        final int               radius               = config.radius;
+        final int               maxAltitude          = config.maxAltitude;
+        final boolean           enableLiquidSafety   = config.enableLiquidSafety;
+        final IBlockState       hardBlock            = config.hardBlock;
+        final Set<IBlockState>  whitelistedOreBlocks = config.whitelistedOreBlocks;
+        final Set<IBlockState>  safeBlocks           = config.safeBlocks;
+        final Set<IBlockState>  untouchableBlocks    = config.untouchableBlocks;
+        
 
         // Bounds for the 16x16 area we are actually generating on
         final int innerXStart = chunkX * 16 + 8;
@@ -56,15 +63,30 @@ public class BlockGenerator implements IWorldGenerator {
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 
         // Initialize values
+        IBlockState lastState = null;
+        int lastValue = 0;
         for (int x = 0; x < outerXEnd - outerXStart; x++) {
             for (int z = 0; z < outerZEnd - outerZStart; z++) {
                 for (int y = 0; y < maxAltitude + radius; y++) {
                     pos.setPos(outerXStart + x, y, outerZStart + z);
                     IBlockState state = world.getBlockState(pos);
-                    if (safeBlocks.contains(state) || (enableLiquidSafety && state.getMaterial().isLiquid())) values[x][y][z] = 0; //  0 --> Safe Block
-                    else if (untouchableBlocks.contains(state)) values[x][y][z] = -1;                                              // -1 --> Untouchable Block
-                    else if (enableOreDeletion && whitelistedOreBlocks.contains(state)) values[x][y][z] = 3;                       //  3 --> Ore Block
-                    else values[x][y][z] = 2;                                                                                      //  2 --> Can be processed
+                    // Optimization: if this is the same state as the last state, it will have the same value
+                    if(state == lastState) {
+                        values[x][y][z] = lastValue;
+                    } else {
+                        lastState = state;
+                        int value;
+                        if (safeBlocks.contains(state) || (enableLiquidSafety && state.getMaterial().isLiquid())) {
+                            value = 0;  //  0 --> Safe Block
+                        } else if (untouchableBlocks.contains(state)) {
+                            value = -1; // -1 --> Untouchable Block
+                        } else if (enableOreDeletion && whitelistedOreBlocks.contains(state)) {
+                            value = 3;  //  3 --> Ore Block
+                        } else {
+                            value = 2;  //  2 --> Can be processed
+                        }
+                        values[x][y][z] = lastValue = value;
+                    }
                 }
             }
         }
@@ -116,49 +138,66 @@ public class BlockGenerator implements IWorldGenerator {
             Arrays.stream(Configuration.whitelistedDimensionIDs).anyMatch(id -> id == world.provider.getDimension());
     }
 
-    private Set<IBlockState> getBlockSetFromNames(String[] blockNames) {
-        Set<IBlockState> blockStateList = new HashSet<>();
+    private static class CachedConfig {
+        final Set<IBlockState>  whitelistedOreBlocks, safeBlocks, untouchableBlocks;
+        final IBlockState hardBlock;
+        final boolean enableOreDeletion, enableLiquidSafety;
+        final int radius, maxAltitude;
+        CachedConfig(ConfigHolder config) {
+            enableOreDeletion = config.enableOreDeletion.get();
+            enableLiquidSafety = config.enableLiquidSafety.get();
+            radius = config.genDistance.get();
+            maxAltitude = config.maxAltitude.get();
+            hardBlock = getHardBlockFromString(config.hardBlock.get());
+            whitelistedOreBlocks = getBlockSetFromNames(config.oreWhitelist.get());
+            safeBlocks = getBlockSetFromNames(config.safeBlocks.get());
+            untouchableBlocks = getBlockSetFromNames(config.untouchableBlocks.get());
+        }
+        
+        private Set<IBlockState> getBlockSetFromNames(String[] blockNames) {
+            Set<IBlockState> blockStateList = new HashSet<>();
 
-        for (String blockName : blockNames) {
-            try {
-                if (blockName.indexOf('@') > -1) {
-                    String[] nameSplit = blockName.split("@", 2);
-                    Block block = Block.getBlockFromName(nameSplit[0]);
-                    if (block != null) blockStateList.add(block.getStateFromMeta(Integer.parseInt(nameSplit[1])));
+            for (String blockName : blockNames) {
+                try {
+                    if (blockName.indexOf('@') > -1) {
+                        String[] nameSplit = blockName.split("@", 2);
+                        Block block = Block.getBlockFromName(nameSplit[0]);
+                        if (block != null) blockStateList.add(block.getStateFromMeta(Integer.parseInt(nameSplit[1])));
+                    }
+                    else {
+                        Block block = Block.getBlockFromName(blockName);
+                        if (block != null) blockStateList.add(block.getDefaultState());
+                    }
+                } catch (Exception e) {
+                    YungsLaw.LOGGER.error("ERROR: Unable to find block {}: {}", blockName, e);
                 }
-                else {
-                    Block block = Block.getBlockFromName(blockName);
-                    if (block != null) blockStateList.add(block.getDefaultState());
-                }
-            } catch (Exception e) {
-                YungsLaw.LOGGER.error("ERROR: Unable to find block {}: {}", blockName, e);
             }
+
+            return blockStateList;
         }
 
-        return blockStateList;
-    }
+        /**
+         * Gets the namespaced Hard Block string from the config and returns its BlockState.
+         * Defaults to obsidian if its BlockState cannot be found.
+         */
+        private IBlockState getHardBlockFromString(String hardBlockString) {
+            IBlockState hardBlock;
 
-    /**
-     * Gets the namespaced Hard Block string from the config and returns its BlockState.
-     * Defaults to obsidian if its BlockState cannot be found.
-     */
-    private IBlockState getHardBlockFromString(String hardBlockString) {
-        IBlockState hardBlock;
+            try {
+                hardBlock = Block.getBlockFromName(hardBlockString).getDefaultState();
+            } catch (Exception e) {
+                YungsLaw.LOGGER.error("ERROR: Unable to use block {}: {}", hardBlockString, e);
+                YungsLaw.LOGGER.error("Using obsidian instead...");
+                hardBlock = Blocks.OBSIDIAN.getDefaultState();
+            }
 
-        try {
-            hardBlock = Block.getBlockFromName(hardBlockString).getDefaultState();
-        } catch (Exception e) {
-            YungsLaw.LOGGER.error("ERROR: Unable to use block {}: {}", hardBlockString, e);
-            YungsLaw.LOGGER.error("Using obsidian instead...");
-            hardBlock = Blocks.OBSIDIAN.getDefaultState();
+            if (hardBlock == null) {
+                YungsLaw.LOGGER.error("ERROR: Unable to use block {}: null block returned.", hardBlockString);
+                YungsLaw.LOGGER.warn("Using obsidian instead...");
+                hardBlock = Blocks.OBSIDIAN.getDefaultState();
+            }
+
+            return hardBlock;
         }
-
-        if (hardBlock == null) {
-            YungsLaw.LOGGER.error("ERROR: Unable to use block {}: null block returned.", hardBlockString);
-            YungsLaw.LOGGER.warn("Using obsidian instead...");
-            hardBlock = Blocks.OBSIDIAN.getDefaultState();
-        }
-
-        return hardBlock;
     }
 }

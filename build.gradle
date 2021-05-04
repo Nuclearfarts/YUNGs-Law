@@ -51,8 +51,8 @@ dependencies {
     //compile "some.group:artifact:version:classifier"
     //compile "some.group:artifact:version"
 
-    provided 'curse.maven:quark:2924091'
-    provided 'curse.maven:appliedenergistics2:2747063'
+    provided 'curse.maven:quark-243121:2924091'
+    provided 'curse.maven:appliedenergistics2-223794:2747063'
 
     // real examples
     //compile 'com.mod-buildcraft:buildcraft:6.0.8:dev'  // adds buildcraft to the dev env
