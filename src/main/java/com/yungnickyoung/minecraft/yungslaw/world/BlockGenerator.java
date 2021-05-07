@@ -124,11 +124,11 @@ public class BlockGenerator implements IWorldGenerator {
                     // Ore deletion mode
                     if (enableOreDeletion && values[getArrayLoc(dx, dy, dz, x, y, z)] == 3) {
                         // Replace with biome filler block
-                        world.setBlockState(pos, world.getBiome(pos).fillerBlock);
+                        world.setBlockState(pos, world.getBiome(pos).fillerBlock, 16 | 2);
                     }
                     // Replacement mode (default)
                     else if (!enableOreDeletion && values[getArrayLoc(dx, dy, dz, x, y, z)] == 2) {
-                        world.setBlockState(pos, hardBlock);
+                        world.setBlockState(pos, hardBlock, 16 | 2);
                     }
                 }
             }
