@@ -14,6 +14,7 @@ import net.minecraft.init.Blocks;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
+import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.chunk.IChunkProvider;
 import net.minecraft.world.gen.IChunkGenerator;
 import net.minecraftforge.fml.common.IWorldGenerator;
@@ -29,7 +30,6 @@ public class BlockGenerator implements IWorldGenerator {
     public void generate(Random random, int chunkX, int chunkZ, World world, IChunkGenerator chunkGenerator, IChunkProvider chunkProvider) {
         if (!(world instanceof WorldServer)) return;
         if (!isDimensionWhitelisted(world)) return;
-
         // Extract vars from config for this dimension
         final CachedConfig config = configCache.computeIfAbsent(world.provider.getDimension(), i -> new CachedConfig(YungsLaw.configMap.computeIfAbsent(world.provider.getDimension(), ConfigLoader::loadConfigFromFileForDimension)));
         final boolean           enableOreDeletion    = config.enableOreDeletion;
@@ -58,13 +58,16 @@ public class BlockGenerator implements IWorldGenerator {
 
         // 3-D array of values we set for each block. I don't use an enum here to avoid additional overhead cost
         // -1 = should not be processed, 0 = Safe Block, 1 = Block within range of AIR, 2 = should be processed, 3 = ore (for ore delete mode)
-        int[][][] values = new int[outerXEnd - outerXStart][maxAltitude + radius][outerZEnd - outerZStart];
+        int dx = outerXEnd - outerXStart;
+        int dy = maxAltitude + radius;
+        int dz = outerZEnd - outerZStart;
+        byte[] values = new byte[dx * dy * dz];
 
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 
         // Initialize values
         IBlockState lastState = null;
-        int lastValue = 0;
+        byte lastValue = 0;
         for (int x = 0; x < outerXEnd - outerXStart; x++) {
             for (int z = 0; z < outerZEnd - outerZStart; z++) {
                 for (int y = 0; y < maxAltitude + radius; y++) {
@@ -72,10 +75,10 @@ public class BlockGenerator implements IWorldGenerator {
                     IBlockState state = world.getBlockState(pos);
                     // Optimization: if this is the same state as the last state, it will have the same value
                     if(state == lastState) {
-                        values[x][y][z] = lastValue;
+                        values[getArrayLoc(dx, dy, dz, x, y, z)] = lastValue;
                     } else {
                         lastState = state;
-                        int value;
+                        byte value;
                         if (safeBlocks.contains(state) || (enableLiquidSafety && state.getMaterial().isLiquid())) {
                             value = 0;  //  0 --> Safe Block
                         } else if (untouchableBlocks.contains(state)) {
@@ -85,7 +88,7 @@ public class BlockGenerator implements IWorldGenerator {
                         } else {
                             value = 2;  //  2 --> Can be processed
                         }
-                        values[x][y][z] = lastValue = value;
+                        values[getArrayLoc(dx, dy, dz, x, y, z)] = lastValue = value;
                     }
                 }
             }
@@ -96,7 +99,7 @@ public class BlockGenerator implements IWorldGenerator {
             for (int z = outerZStart; z < outerZEnd; z++) {
                 for (int y = 0; y < maxAltitude + radius; y++) {
                     // Mark blocks within radius distance of AIR blocks as safe from processing (1)
-                    if (values[x - outerXStart][y][z - outerZStart] == 0) {
+                    if (values[getArrayLoc(dx, dy, dz, x - outerXStart, y, z - outerZStart)] == 0) {
                         for (int offsetX = x - outerXStart - radius; offsetX <= x - outerXStart + radius; offsetX++) {
                             if (offsetX < radius || offsetX > 15 + radius) continue;
 
@@ -105,7 +108,7 @@ public class BlockGenerator implements IWorldGenerator {
 
                                 for (int offsetY = y - radius; offsetY <= y + radius; offsetY++) {
                                     if (offsetY < 0 || offsetY > maxAltitude) continue;
-                                    values[offsetX][offsetY][offsetZ] = Math.min(values[offsetX][offsetY][offsetZ], 1); // 1 --> Cannot be processed
+                                    values[getArrayLoc(dx, dy, dz, offsetX, offsetY, offsetZ)] = (byte) Math.min(values[getArrayLoc(dx, dy, dz, offsetX, offsetY, offsetZ)], 1); // 1 --> Cannot be processed
                                 }
                             }
                         }
@@ -113,24 +116,27 @@ public class BlockGenerator implements IWorldGenerator {
                 }
             }
         }
-
         // Process marked blocks
         for (int x = radius; x < 16 + radius; x++) {
             for (int z = radius; z < 16 + radius; z++) {
                 for (int y = 0; y < maxAltitude; y++) {
                     pos.setPos(x + outerXStart, y, z + outerZStart);
                     // Ore deletion mode
-                    if (enableOreDeletion && values[x][y][z] == 3) {
+                    if (enableOreDeletion && values[getArrayLoc(dx, dy, dz, x, y, z)] == 3) {
                         // Replace with biome filler block
                         world.setBlockState(pos, world.getBiome(pos).fillerBlock);
                     }
                     // Replacement mode (default)
-                    else if (!enableOreDeletion && values[x][y][z] == 2) {
+                    else if (!enableOreDeletion && values[getArrayLoc(dx, dy, dz, x, y, z)] == 2) {
                         world.setBlockState(pos, hardBlock);
                     }
                 }
             }
         }
+    }
+    
+    private int getArrayLoc(int dx, int dy, int dz, int x, int y, int z) {
+    	return x + (y * dx) + (z * dx * dy);
     }
 
     private boolean isDimensionWhitelisted(World world) {
